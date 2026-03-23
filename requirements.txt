@@ -1,0 +1,15 @@
+flask
+werkzeug
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+tensorflow
+keras
+joblib
+pandas
+numpy
+scikit-learn
+mysql-connector-python
+psutil
+xgboost

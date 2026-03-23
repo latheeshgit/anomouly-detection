@@ -1,0 +1,13 @@
+app/service_account.json
+# Datasets
+data/
+*.csv
+
+# Models (optional – large)
+models/*.keras
+models/*.joblib
+
+# Python
+__pycache__/
+venv/
+.env
