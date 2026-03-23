@@ -1,0 +1,458 @@
+<script>
+    // Variables for file selection
+    const dropArea = document.getElementById('dropArea');
+    const fileInput = document.getElementById('fileInput');
+    const fileList = document.getElementById('fileList');
+    const startUploadBtn = document.getElementById('startUploadBtn');
+    const fileSelectionSection = document.getElementById('fileSelectionSection');
+    const uploadingSection = document.getElementById('uploadingSection');
+    
+    // Variables for upload progress
+    const progressCircle = document.getElementById('progressCircle');
+    const progressText = document.getElementById('progressText');
+    const speedValue = document.getElementById('speedValue');
+    const timeValue = document.getElementById('timeValue');
+    const ecgPath = document.getElementById('ecgPath');
+    const backendStatus = document.getElementById('backendStatus');
+    const backendStatusText = document.getElementById('backendStatusText');
+    
+    // Circle properties
+    const radius = 90;
+    const circumference = 2 * Math.PI * radius;
+    
+    // ECG chart properties
+    const ecgWidth = document.getElementById('ecgLine').clientWidth;
+    const ecgHeight = 120;
+    const ecgMiddle = ecgHeight / 2;
+    let ecgData = [];
+    const normalEcgAmplitude = 20;
+    const anomalyEcgAmplitude = 60;
+    let anomalyDetected = false;
+    let uploadCancelled = false;
+    let pollInterval = null;
+    let uploadCompleted = false;
+    
+    // File storage
+    let selectedFiles = [];
+    const maxFileSize = {{ max_size }};
+    
+    // Highlight drop area when dragging over
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropArea.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            dropArea.classList.add('highlight');
+        });
+    });
+    
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            dropArea.classList.remove('highlight');
+        });
+    });
+    
+    // Handle file drop
+    dropArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        handleFiles(e.dataTransfer.files);
+    });
+    
+    // Handle file selection via input
+    fileInput.addEventListener('change', () => {
+        handleFiles(fileInput.files);
+    });
+    
+    // Handle file selection
+    function handleFiles(files) {
+        let totalSize = selectedFiles.reduce((total, file) => total + file.size, 0);
+        
+        Array.from(files).forEach(file => {
+            // Check if file format is allowed
+            const fileExt = '.' + file.name.split('.').pop().toLowerCase();
+            const allowedExts = [{% for ext in allowed_extensions %}'{{ ext }}'{% if not loop.last %}, {% endif %}{% endfor %}];
+            
+            if (!allowedExts.includes(fileExt)) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Invalid File Format',
+                    text: `The file "${file.name}" is not in an allowed format.`,
+                });
+                return;
+            }
+            
+            // Check if adding this file would exceed the max size limit
+            if (totalSize + file.size > maxFileSize) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'File Size Limit Exceeded',
+                    text: 'The total size of selected files cannot exceed 1GB.',
+                });
+                return;
+            }
+            
+            // Add file to selected files
+            selectedFiles.push(file);
+            totalSize += file.size;
+            
+            // Add file to the list
+            addFileToList(file);
+        });
+        
+        // Enable/disable upload button
+        startUploadBtn.disabled = selectedFiles.length === 0;
+    }
+    
+    // Add file to the list display
+    function addFileToList(file) {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        
+        const fileSize = formatFileSize(file.size);
+        
+        fileItem.innerHTML = `
+            <div>
+                <span class="file-name">${file.name}</span>
+                <span class="file-size ms-2">(${fileSize})</span>
+            </div>
+            <i class="fas fa-times remove-file" data-filename="${file.name}"></i>
+        `;
+        
+        fileList.appendChild(fileItem);
+        
+        // Add event listener to remove button
+        fileItem.querySelector('.remove-file').addEventListener('click', (e) => {
+            const filename = e.target.getAttribute('data-filename');
+            removeFile(filename, fileItem);
+        });
+    }
+    
+    // Remove file from the selection
+    function removeFile(filename, element) {
+        selectedFiles = selectedFiles.filter(file => file.name !== filename);
+        element.remove();
+        
+        // Enable/disable upload button
+        startUploadBtn.disabled = selectedFiles.length === 0;
+    }
+    
+    // Format file size
+    function formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + ' bytes';
+        else if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        else return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+    
+    // Start upload process
+    startUploadBtn.addEventListener('click', () => {
+        // Validate total file size again as a safety measure
+        const totalSize = selectedFiles.reduce((total, file) => total + file.size, 0);
+        if (totalSize > maxFileSize) {
+            Swal.fire({
+                icon: 'error',
+                title: 'File Size Limit Exceeded',
+                text: 'The total size of selected files cannot exceed 1GB.',
+            });
+            return;
+        }
+        
+        // Switch to uploading section
+        fileSelectionSection.style.display = 'none';
+        uploadingSection.style.display = 'block';
+        
+        // Start ECG animation
+        startEcgAnimation();
+        
+        // Upload files
+        uploadFiles();
+    });
+    
+    // Update progress circle
+    function updateProgress(percent) {
+        const offset = circumference - (percent / 100) * circumference;
+        progressCircle.style.strokeDashoffset = offset;
+        progressText.textContent = Math.round(percent) + '%';
+        
+        // Change color based on progress
+        if (percent < 30) {
+            progressCircle.style.stroke = '#3498db'; // Blue
+        } else if (percent < 70) {
+            progressCircle.style.stroke = '#f1c40f'; // Yellow
+        } else {
+            progressCircle.style.stroke = '#2ecc71'; // Green
+        }
+    }
+    
+    // Generate ECG data points
+    function generateEcgData() {
+        // Clear previous data
+        ecgData = [];
+        
+        // Generate enough points to fill the width
+        for (let i = 0; i < ecgWidth; i++) {
+            // Normal ECG pattern (small oscillations)
+            if (!anomalyDetected) {
+                const normalValue = ecgMiddle + Math.sin(i * 0.1) * normalEcgAmplitude;
+                
+                // Add occasional heartbeat spike
+                if (i % 50 === 0) {
+                    ecgData.push(ecgMiddle);
+                    ecgData.push(ecgMiddle - normalEcgAmplitude);
+                    ecgData.push(ecgMiddle + normalEcgAmplitude * 2);
+                    ecgData.push(ecgMiddle - normalEcgAmplitude);
+                    i += 3;
+                } else {
+                    ecgData.push(normalValue);
+                }
+            } else {
+                // Anomaly pattern (erratic, larger oscillations)
+                const anomalyValue = ecgMiddle + 
+                    (Math.sin(i * 0.2) * anomalyEcgAmplitude) + 
+                    (Math.cos(i * 0.3) * anomalyEcgAmplitude * 0.5);
+                ecgData.push(anomalyValue);
+            }
+        }
+    }
+    
+    // Draw ECG path
+    function drawEcgPath() {
+        let path = `M0,${ecgData[0]}`;
+        
+        for (let i = 1; i < ecgData.length; i++) {
+            path += ` L${i},${ecgData[i]}`;
+        }
+        
+        ecgPath.setAttribute('d', path);
+    }
+    
+    // Start ECG animation
+    function startEcgAnimation() {
+        // Initial ECG data
+        generateEcgData();
+        drawEcgPath();
+        
+        // Start color animation
+        ecgPath.style.animation = 'colorChange 5s infinite';
+        
+        // Update ECG every 100ms
+        setInterval(() => {
+            // Shift all points to the left
+            ecgData.shift();
+            
+            // Add a new point on the right
+            if (!anomalyDetected) {
+                const lastX = ecgData.length;
+                // Fixed line: use a new variable instead of adding to the push result
+                const normalValue = ecgMiddle + Math.sin(lastX * 0.1) * normalEcgAmplitude;
+                
+                // Add heartbeat spike occasionally
+                if (lastX % 50 === 0) {
+                    ecgData.push(ecgMiddle);
+                    ecgData.push(ecgMiddle - normalEcgAmplitude);
+                    ecgData.push(ecgMiddle + normalEcgAmplitude * 2);
+                    ecgData.push(ecgMiddle - normalEcgAmplitude);
+                    ecgData.shift();
+                    ecgData.shift();
+                    ecgData.shift();
+                } else {
+                    ecgData.push(normalValue);
+                }
+            } else {
+                const lastX = ecgData.length;
+                const anomalyValue = ecgMiddle + 
+                    (Math.sin(lastX * 0.2) * anomalyEcgAmplitude) + 
+                    (Math.cos(lastX * 0.3) * anomalyEcgAmplitude * 0.5) +
+                    (Math.random() * anomalyEcgAmplitude - anomalyEcgAmplitude/2);
+                ecgData.push(anomalyValue);
+            }
+            
+            // Redraw the path
+            drawEcgPath();
+        }, 50);
+    }
+    
+    // Upload files to server
+    function uploadFiles() {
+        // Create FormData
+        const formData = new FormData();
+        selectedFiles.forEach(file => {
+            formData.append('files', file);
+        });
+        
+        // Initialize progress
+        updateProgress(0);
+        
+        // Create XMLHttpRequest
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/upload', true);
+        
+        // Set a unique upload ID to track this upload session
+        const uploadId = Date.now().toString();
+        formData.append('upload_id', uploadId);
+        
+        // Track upload progress
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const percent = (e.loaded / e.total) * 100;
+                updateProgress(percent);
+                
+                // Calculate speed
+                const speed = e.loaded / (Date.now() - startTime) * 1000 / 1024; // KB/s
+                speedValue.textContent = speed.toFixed(1);
+                
+                // Calculate estimated time
+                const remainingBytes = e.total - e.loaded;
+                const remainingTime = remainingBytes / (speed * 1024);
+                const minutes = Math.floor(remainingTime / 60);
+                const seconds = Math.floor(remainingTime % 60);
+                timeValue.textContent = `${minutes}:${seconds < 10 ? '0' + seconds : seconds}`;
+            }
+        };
+        
+        // Show backend status when upload completes
+        xhr.onload = () => {
+            if (xhr.status === 200) {
+                try {
+                    uploadCompleted = true;
+                    
+                    // Show that the server is now processing the uploaded files
+                    backendStatus.style.display = 'block';
+                    backendStatusText.textContent = 'Server is processing your files...';
+                    
+                    // Start polling for backend progress
+                    pollForBackendProgress(uploadId);
+                } catch (e) {
+                    console.error('Error parsing response:', e);
+                    handleUploadError('Invalid server response');
+                }
+            } else {
+                handleUploadError('Server error: ' + xhr.status);
+            }
+        };
+        
+        // Handle network errors
+        xhr.onerror = () => {
+            handleUploadError('Network error occurred');
+        };
+        
+        // Start upload
+        const startTime = Date.now();
+        xhr.send(formData);
+    }
+    
+    // Poll for backend processing progress
+    function pollForBackendProgress(uploadId) {
+        if (uploadCancelled) return;
+        
+        // Clear any existing poll interval
+        if (pollInterval) {
+            clearInterval(pollInterval);
+        }
+        
+        // Set up polling at regular intervals
+        pollInterval = setInterval(() => {
+            fetch(`/api/progress?upload_id=${uploadId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Update backend status based on progress
+                    if (data.status === 'processing') {
+                        backendStatusText.textContent = `Processing: ${data.progress}% complete`;
+                    } else if (data.status === 'complete') {
+                        clearInterval(pollInterval);
+                        
+                        if (data.detection_status === "success") {
+                            // Show success message
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Transfer Complete',
+                                text: 'Files were successfully uploaded and processed.',
+                                confirmButtonText: 'View Results',
+                            }).then((result) => {
+                                window.location.href = '/results';
+                            });
+                        } else {
+                            // Show anomaly detected message
+                            anomalyDetected = true;
+                            
+                            // Change ECG line to show anomaly
+                            ecgPath.style.stroke = '#e74c3c';
+                            ecgPath.style.animation = 'none';
+                            
+                            Swal.fire({
+                                icon: 'warning',
+                                title: 'Anomaly Detected',
+                                text: `Anomaly detected: ${data.detection_status}`,
+                                confirmButtonText: 'View Results',
+                            }).then((result) => {
+                                window.location.href = '/results';
+                            });
+                        }
+                    } else if (data.status === 'error') {
+                        clearInterval(pollInterval);
+                        handleUploadError(data.message || 'Error processing files');
+                    }
+                    
+                    // Check for anomaly signals
+                    if (data.anomaly_detected) {
+                        anomalyDetected = true;
+                        
+                        // Change ECG line color to red
+                        ecgPath.style.stroke = '#e74c3c';
+                        ecgPath.style.animation = 'none';
+                        
+                        // Update status text
+                        backendStatusText.textContent = 'Anomaly detected during processing';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error polling for backend progress:', error);
+                    
+                    // Don't clear the interval immediately, try again later
+                    // But limit the number of consecutive errors
+                    if (++errorCount > 5) {
+                        clearInterval(pollInterval);
+                        handleUploadError('Connection to server lost');
+                    }
+                });
+        }, 2000); // Poll every 2 seconds
+        
+        let errorCount = 0;
+    }
+    
+    // Handle upload error
+    function handleUploadError(message) {
+        uploadCancelled = true;
+        
+        // Clear polling interval if it exists
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+        
+        Swal.fire({
+            icon: 'error',
+            title: 'Upload Failed',
+            text: message,
+            confirmButtonText: 'Try Again',
+        }).then(() => {
+            window.location.href = '/file_transfer';
+        });
+    }
+    
+    // Initialize progress circle
+    progressCircle.style.strokeDasharray = circumference;
+    progressCircle.style.strokeDashoffset = circumference;
+    
+    // Add beforeunload event to warn users if they try to navigate away during upload
+    window.addEventListener('beforeunload', (e) => {
+        if (!uploadCancelled && !uploadCompleted) {
+            const message = 'Upload in progress. Are you sure you want to leave?';
+            e.returnValue = message;
+            return message;
+        }
+    });
+</script>
